@@ -129,6 +129,47 @@ Hooks.on("canvasPan", (scene, screenPosistion) => {
 	parallaxafyTileArray();
 });
 
+function isV14OrNewer() {
+	return (game.release?.generation ?? Number(game.version.split(".")[0])) >= 14;
+}
+
+function isV12OrNewer() {
+	return (game.release?.generation ?? Number(game.version.split(".")[0])) >= 12;
+}
+
+function getTileMeshCenter(tile) {
+	// In Foundry V14, Tile#mesh#position is equal to TileDocument#x/y.
+	// TileDocument#x/y now represents the anchor position, not always the top-left corner.
+	if (isV14OrNewer()) {
+		const anchorX = Number(tile.texture?.anchorX ?? 0);
+		const anchorY = Number(tile.texture?.anchorY ?? 0);
+
+		return {
+			x: Number(tile.x ?? 0) + ((0.5 - anchorX) * Number(tile.width ?? 0)),
+			y: Number(tile.y ?? 0) + ((0.5 - anchorY) * Number(tile.height ?? 0))
+		};
+	}
+
+	// Legacy V11-V13 behavior
+	return {
+		x: tile.object.x + tile.object.mesh.width / 2,
+		y: tile.object.y + tile.object.mesh.height / 2
+	};
+}
+
+function getTileMeshBasePosition(tile) {
+	// In V14, mesh.x/y should be based on TileDocument x/y.
+	if (isV14OrNewer()) {
+		return {
+			x: Number(tile.x ?? 0),
+			y: Number(tile.y ?? 0)
+		};
+	}
+
+	// In V11-V13, preserve the old module behavior.
+	return getTileMeshCenter(tile);
+}
+
 function parallaxafyTileArray(){
 	for(const tile of game.parallaxTiles.parallaxTileArray){
 		parallaxafyTile(tile);
@@ -143,30 +184,49 @@ function parallaxafyTile(tile){
 	}
 }
 
-function preComputeParallaxFactor(tile){
-	const parallaxFactor = tile.getFlag(MODULE_ID, "parallaxFactor");
+function preComputeParallaxFactor(tile) {
+	const rawParallaxFactor = tile.getFlag(MODULE_ID, "parallaxFactor");
+	const defaultParallaxFactor = game.settings.get(MODULE_ID, "defaultParallaxFactor") ?? "1";
 
-	if(isEmpty(parallaxFactor) || parallaxFactor === ''){
-		return tile.precomputedParallaxFactor = game.settings.get(MODULE_ID, "defaultParallaxFactor"); //"Input is neither a number nor a valid mathematical equation"
+	const useDefault =
+		rawParallaxFactor === undefined ||
+		rawParallaxFactor === null ||
+		rawParallaxFactor === "";
+
+	const input = String(useDefault ? defaultParallaxFactor : rawParallaxFactor).trim();
+
+	// Input is neither a number nor a valid mathematical equation
+	if (input === "") {
+		return tile.precomputedParallaxFactor = Number(defaultParallaxFactor) || 1;
 	}
 
-	let input = tile.getFlag(MODULE_ID, "parallaxFactor");
+	const numericInput = Number(input);
 
 	// Check if the input is only a number
-	if (!isNaN(input)) {
-		return tile.precomputedParallaxFactor = Number(input);
+	if (Number.isFinite(numericInput)) {
+		return tile.precomputedParallaxFactor = numericInput;
 	}
 
-	let r = new Roll(parallaxFactor.replaceAll("@elevation", Math.abs(tile.elevation)));
+	const elevation = Math.abs(Number(tile.elevation ?? 0));
+	const formula = input.replaceAll("@elevation", String(elevation));
 
-	if(r.isDeterministic){
-		if(foundry.utils.isNewerVersion(game.version , 12)) { r.evaluateSync(); } //check version
-		else { r.roll({async : false}); } //v11 support 
+	try {
+		const r = new Roll(formula);
 
-		return tile.precomputedParallaxFactor = r.total;
+		if (r.isDeterministic) {
+			if (isV12OrNewer()) { // Check V12+
+				r.evaluateSync();
+			} else {
+				r.roll({ async: false }); // V11 support
+			}
+			return tile.precomputedParallaxFactor = r.total;
+		}
+	} catch (err) {
+		console.warn("Parallax Tiles | Invalid parallax factor:", input, err);
 	}
 
-	return tile.precomputedParallaxFactor = game.settings.get(MODULE_ID, "defaultParallaxFactor"); //"Input is neither a number nor a valid mathematical equation"
+	const fallback = Number(defaultParallaxFactor);
+	return tile.precomputedParallaxFactor = Number.isFinite(fallback) ? fallback : 1;
 }
 
 function computeParallaxFactor(tile){
@@ -184,13 +244,13 @@ function parallaxafyTileMesh(tile){
 	
 	if(lockX && lockY || !parallaxFactor || !maxOffset) return;
 
-
-	let objectMeshCenterX = tile.object.x + tile.object.mesh.width / 2;
-	let objectMeshCenterY = tile.object.y + tile.object.mesh.height / 2;
+	// V14+ center calculation
+	const objectMeshCenter = getTileMeshCenter(tile);
+	const objectMeshBase = getTileMeshBasePosition(tile);
 
 	// Calculate the distance between the camera center and the object's mesh center
-	let deltaX = canvas.stage.pivot.x - objectMeshCenterX;
-	let deltaY = canvas.stage.pivot.y - objectMeshCenterY;
+	let deltaX = canvas.stage.pivot.x - objectMeshCenter.x;
+	let deltaY = canvas.stage.pivot.y - objectMeshCenter.y;
 
 	// Apply the parallax effect
 	let rawParallaxOffsetX = deltaX * parallaxFactor * 0.1;
@@ -201,8 +261,8 @@ function parallaxafyTileMesh(tile){
 	let parallaxOffsetY = maxOffset * Math.tanh(rawParallaxOffsetY / maxOffset);
 
 	// Calculate the new position of the object's mesh
-	if(!lockX) tile.object.mesh.x = objectMeshCenterX - parallaxOffsetX;
-	if(!lockY) tile.object.mesh.y = objectMeshCenterY - parallaxOffsetY;
+	if(!lockX) tile.object.mesh.x = objectMeshBase.x - parallaxOffsetX;
+	if(!lockY) tile.object.mesh.y = objectMeshBase.y - parallaxOffsetY;
 }
 
 function parallaxafyTileTexture(tile){
@@ -219,12 +279,12 @@ function parallaxafyTileTexture(tile){
 
 	//should this use linear calculation instead? Include option to choose between hyperbolic tangent and linear?
 
-	let objectMeshCenterX = tile.object.x + tile.object.mesh.width / 2;
-	let objectMeshCenterY = tile.object.y + tile.object.mesh.height / 2;
+	// V14+ center calculate
+	const objectMeshCenter = getTileMeshCenter(tile);
 
 	// Calculate the distance between the camera center and the object's mesh center
-	let deltaX = canvas.stage.pivot.x - objectMeshCenterX;
-	let deltaY = canvas.stage.pivot.y - objectMeshCenterY;
+	let deltaX = canvas.stage.pivot.x - objectMeshCenter.x;
+	let deltaY = canvas.stage.pivot.y - objectMeshCenter.y;
 
 	// Apply the parallax effect
 	let rawParallaxOffsetX = deltaX * parallaxFactor * 0.1;
@@ -233,6 +293,12 @@ function parallaxafyTileTexture(tile){
 	// Constrain the parallax offset using a smooth approach with tanh
 	let parallaxOffsetX = maxOffset * Math.tanh(rawParallaxOffsetX / maxOffset);
 	let parallaxOffsetY = maxOffset * Math.tanh(rawParallaxOffsetY / maxOffset);
+
+	// V14: in Texture Mode the mesh itself should remain at its base TileDocument position.
+	if (isV14OrNewer()) {
+		if(!lockX) tile.object.mesh.x = tile.x;
+		if(!lockY) tile.object.mesh.y = tile.y;
+	}
 
 	// Calculate the new position of the object's mesh
 	if(!lockX) tile.object.mesh.texture.orig.x = parallaxOffsetX;
