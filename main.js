@@ -170,6 +170,15 @@ function getTileMeshBasePosition(tile) {
 	return getTileMeshCenter(tile);
 }
 
+function clamp(value, min, max) {
+	return Math.min(Math.max(value, min), max);
+}
+
+function getCanvasZoomFactor() {
+	const zoom = canvas.stage.scale.x || 1;
+	return clamp(Math.sqrt(zoom), 0.1, 2.50);
+}
+
 function parallaxafyTileArray(){
 	for(const tile of game.parallaxTiles.parallaxTileArray){
 		parallaxafyTile(tile);
@@ -252,9 +261,11 @@ function parallaxafyTileMesh(tile){
 	let deltaX = canvas.stage.pivot.x - objectMeshCenter.x;
 	let deltaY = canvas.stage.pivot.y - objectMeshCenter.y;
 
+	const zoomFactor = getCanvasZoomFactor();
+
 	// Apply the parallax effect
-	let rawParallaxOffsetX = deltaX * parallaxFactor * 0.1;
-	let rawParallaxOffsetY = deltaY * parallaxFactor * 0.1;
+	let rawParallaxOffsetX = deltaX * parallaxFactor * 0.1 * zoomFactor;
+	let rawParallaxOffsetY = deltaY * parallaxFactor * 0.1 * zoomFactor;
 
 	// Constrain the parallax offset using a smooth approach with tanh
 	let parallaxOffsetX = maxOffset * Math.tanh(rawParallaxOffsetX / maxOffset);
@@ -282,9 +293,11 @@ function parallaxafyTileTexture(tile){
 	// V14+ center calculate
 	const objectMeshCenter = getTileMeshCenter(tile);
 
+	const zoomFactor = getCanvasZoomFactor();
+
 	// Calculate the distance between the camera center and the object's mesh center
-	let deltaX = canvas.stage.pivot.x - objectMeshCenter.x;
-	let deltaY = canvas.stage.pivot.y - objectMeshCenter.y;
+	let deltaX = canvas.stage.pivot.x - objectMeshCenter.x * zoomFactor;
+	let deltaY = canvas.stage.pivot.y - objectMeshCenter.y * zoomFactor;
 
 	// Apply the parallax effect
 	let rawParallaxOffsetX = deltaX * parallaxFactor * 0.1;
